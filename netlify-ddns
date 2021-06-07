@@ -57,9 +57,14 @@ create_netlify_dns_record() {
 
 setup_netlify_dns_record() {
 	SUBDOMAIN="$1"; shift
-	echo "Setting up $SUBDOMAIN.$DOMAIN"
-	delete_netlify_dns_record_by_subdomain_if_exists "$SUBDOMAIN"
-	create_netlify_dns_record "$SUBDOMAIN" && echo "Done setting up $SUBDOMAIN.$DOMAIN"
+	RECORD_VALUE="$(jsq -r "map(select(.hostname == \"$SUBDOMAIN.$DOMAIN\"))[0].value")"
+	if [ "$RECORD_VALUE" == "$MY_IPV4" ]; then
+		echo "$SUBDOMAIN.$DOMAIN is already up to date"
+	else
+		echo "Setting up $SUBDOMAIN.$DOMAIN"
+		delete_netlify_dns_record_by_subdomain_if_exists "$SUBDOMAIN"
+		create_netlify_dns_record "$SUBDOMAIN" && echo "Done setting up $SUBDOMAIN.$DOMAIN"
+	fi
 }
 
 echo "According to ifconfig.io, my IPv4 address is: $MY_IPV4"
