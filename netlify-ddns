@@ -17,7 +17,7 @@ TTL_SECONDS="${TTL_SECONDS:-120}"
 # constants
 DNS_ZONE="$(<<< "$DOMAIN" tr "." "_")"
 API="https://api.netlify.com/api/v1"
-URL="$API/dns_zones/$DNS_ZONE/dns_records?access_token=$ACCESS_TOKEN" 
+URL="$API/dns_zones/$DNS_ZONE/dns_records?access_token=$ACCESS_TOKEN"
 
 # setup
 CURL_FLAGS="-sL"
@@ -40,7 +40,8 @@ delete_netlify_dns_record_by_subdomain_if_exists() {
 	SUBDOMAIN="$1"; shift
 	if jsq -e "map(select(.hostname == \"$SUBDOMAIN.$DOMAIN\"))[0]" > /dev/null; then
 		RECORD_ID="$(jsq -r "map(select(.hostname == \"$SUBDOMAIN.$DOMAIN\"))[0].id")"
-		$curl -X DELETE "$API/dns_zones/$DNS_ZONE/dns_records/$RECORD_ID?access_token=$ACCESS_TOKEN" > /dev/null
+		RESPONSE_CODE=$($curl -X DELETE -w "%{response_code}" "$API/dns_zones/$DNS_ZONE/dns_records/$RECORD_ID?access_token=$ACCESS_TOKEN")
+		[ $RESPONSE_CODE != 200 ] && { echo "Failed to delete the existing entry for $SUBDOMAIN.$DOMAIN"; exit 6; }
 	fi
 }
 
