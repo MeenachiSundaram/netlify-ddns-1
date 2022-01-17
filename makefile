@@ -1,8 +1,7 @@
 XDG_CONFIG_HOME ?= ${HOME}/.config
 
 .env: example.env
-	cp example.env .env
-	${EDITOR} .env
+	test -f .env || cp example.env .env
 
 .PHONY: run
 run: .env netlify-ddns ; ./netlify-ddns

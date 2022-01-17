@@ -1,21 +1,37 @@
 #!/usr/bin/env bash
 
-command -v jq &>/dev/null || { echo "jq is not installed"; exit 4; }
-command -v curl &>/dev/null || { echo "curl is not installed"; exit 5; }
+command -v jq &>/dev/null || {
+	echo "jq is not installed"
+	exit 4
+}
+command -v curl &>/dev/null || {
+	echo "curl is not installed"
+	exit 5
+}
 
 [ -f /etc/netlify-ddns.env ] && source /etc/netlify-ddns.env
-[ -f "${XDG_CONFIG_HOME:-$HOME/.config}/netlify-ddns/rc" ] && \
+[ -f "${XDG_CONFIG_HOME:-$HOME/.config}/netlify-ddns/rc" ] &&
 	source "${XDG_CONFIG_HOME:-$HOME/.config}/netlify-ddns/rc"
 [ -f .env ] && source .env
-[ -z "$SUBDOMAINS" ] && { echo "SUBDOMAINS environment variable not set"; exit 1; }
-[ -z "$ACCESS_TOKEN" ] && { echo "ACCESS_TOKEN environment variable not set"; exit 2; }
-[ -z "$DOMAIN" ] && { echo "DOMAIN environment variable not set"; exit 3; }
+[ -z "$SUBDOMAINS" ] && {
+	echo "SUBDOMAINS environment variable not set"
+	exit 1
+}
+[ -z "$ACCESS_TOKEN" ] && {
+	echo "ACCESS_TOKEN environment variable not set"
+	exit 2
+}
+[ -z "$DOMAIN" ] && {
+	echo "DOMAIN environment variable not set"
+	exit 3
+}
 
 # options
 TTL_SECONDS="${TTL_SECONDS:-120}"
+ROOT="${ROOT:-1}"
 
 # constants
-DNS_ZONE="$(<<< "$DOMAIN" tr "." "_")"
+DNS_ZONE="$(tr <<<"$DOMAIN" "." "_")"
 API="https://api.netlify.com/api/v1"
 URL="$API/dns_zones/$DNS_ZONE/dns_records?access_token=$ACCESS_TOKEN"
 
@@ -24,8 +40,11 @@ CURL_FLAGS="-sL"
 curl="curl $CURL_FLAGS"
 
 # fetch IP addresses
-MY_IPV4="$($curl -4 ifconfig.io)" || \
-	{ echo "Failed to retrieve an IPv4 address from ifconfig.io"; exit 4; }
+MY_IPV4="$($curl -4 ifconfig.io)" ||
+	{
+		echo "Failed to retrieve an IPv4 address from ifconfig.io"
+		exit 4
+	}
 
 # TODO: ipv6
 # MY_IPV6="$($curl -6 ifconfig.io)"
@@ -33,31 +52,59 @@ MY_IPV4="$($curl -4 ifconfig.io)" || \
 # fetch current netlify DNS state
 CURRENT_DNS_JSON="$(curl -sL "$URL" | jq -r 'map(select(.type == "A" or .type == "AAAA"))')"
 jsq() {
-	<<< "$CURRENT_DNS_JSON" jq "$@"
+	jq <<<"$CURRENT_DNS_JSON" "$@"
+}
+delete_netlify_dns_record_by_root_domain_if_exists() {
+	shift
+	if jsq -e "map(select(.hostname == \"$DOMAIN\"))[0]" >/dev/null; then
+		RECORD_ID="$(jsq -r "map(select(.hostname == \"$DOMAIN\"))[0].id")"
+		RESPONSE_CODE=$($curl -X DELETE -w "%{response_code}" "$API/dns_zones/$DNS_ZONE/dns_records/$RECORD_ID?access_token=$ACCESS_TOKEN")
+		[ $RESPONSE_CODE != 200 ] && {
+			echo "Failed to delete the existing entry for $DOMAIN"
+			exit 6
+		}
+	fi
+}
+
+create_netlify_root_dns_record() {
+	shift
+	PAYLOAD="$(jq -n -r \
+		--arg type "A" \
+		--arg name "$DOMAIN" \
+		--arg val "$MY_IPV4" \
+		--arg ttl "$TTL_SECONDS" \
+		'{type:$type,hostname:$name,value:$val,ttl:$ttl}')"
+	$curl <<<"$PAYLOAD" -d @- -H 'content-type:application/json' "$API/dns_zones/$DNS_ZONE/dns_records?access_token=$ACCESS_TOKEN" >/dev/null
 }
 
 delete_netlify_dns_record_by_subdomain_if_exists() {
-	SUBDOMAIN="$1"; shift
-	if jsq -e "map(select(.hostname == \"$SUBDOMAIN.$DOMAIN\"))[0]" > /dev/null; then
+	SUBDOMAIN="$1"
+	shift
+	if jsq -e "map(select(.hostname == \"$SUBDOMAIN.$DOMAIN\"))[0]" >/dev/null; then
 		RECORD_ID="$(jsq -r "map(select(.hostname == \"$SUBDOMAIN.$DOMAIN\"))[0].id")"
 		RESPONSE_CODE=$($curl -X DELETE -w "%{response_code}" "$API/dns_zones/$DNS_ZONE/dns_records/$RECORD_ID?access_token=$ACCESS_TOKEN")
-		[ $RESPONSE_CODE != 200 ] && { echo "Failed to delete the existing entry for $SUBDOMAIN.$DOMAIN"; exit 6; }
+		[ $RESPONSE_CODE != 200 ] && {
+			echo "Failed to delete the existing entry for $SUBDOMAIN.$DOMAIN"
+			exit 6
+		}
 	fi
 }
 
 create_netlify_dns_record() {
-	SUBDOMAIN="$1"; shift
+	SUBDOMAIN="$1"
+	shift
 	PAYLOAD="$(jq -n -r \
 		--arg type "A" \
 		--arg name "$SUBDOMAIN" \
-		--arg val  "$MY_IPV4" \
-		--arg ttl  "$TTL_SECONDS" \
+		--arg val "$MY_IPV4" \
+		--arg ttl "$TTL_SECONDS" \
 		'{type:$type,hostname:$name,value:$val,ttl:$ttl}')"
-	<<< "$PAYLOAD" $curl -d @- -H 'content-type:application/json' "$API/dns_zones/$DNS_ZONE/dns_records?access_token=$ACCESS_TOKEN" > /dev/null
+	$curl <<<"$PAYLOAD" -d @- -H 'content-type:application/json' "$API/dns_zones/$DNS_ZONE/dns_records?access_token=$ACCESS_TOKEN" >/dev/null
 }
 
 setup_netlify_dns_record() {
-	SUBDOMAIN="$1"; shift
+	SUBDOMAIN="$1"
+	shift
 	RECORD_VALUE="$(jsq -r "map(select(.hostname == \"$SUBDOMAIN.$DOMAIN\"))[0].value")"
 	if [ "$RECORD_VALUE" == "$MY_IPV4" ]; then
 		echo "$SUBDOMAIN.$DOMAIN is already up to date"
@@ -75,5 +122,11 @@ for s in "${SUBDOMAINS[@]}"; do
 done
 echo "Waiting for jobs to finish..."
 wait
+if [ "$ROOT" == "1" ]; then
+	shift
+	echo "Setting up $DOMAIN"
+	delete_netlify_dns_record_by_subdomain_if_exists
+	create_netlify_dns_record && echo "Done setting up $DOMAIN"
+fi
 
 # jsq 'map(.hostname)'
